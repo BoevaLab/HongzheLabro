@@ -4,7 +4,7 @@ import anndata as ad
 import scanpy as sc
 import pandas as pd
 import numpy as np
-
+import scipy
 
 import warnings
 from math import ceil
@@ -224,44 +224,64 @@ class SCVIadver_humanimm(VAEMixin, UnsupervisedadverTrainingMixin_imm, BaseModel
         cls.register_manager(adata_manager)
 
 
-def data_spliting(adata, label_key, non_malignant_cell_indices, malignant_cell_indices):
+def data_spliting_del(adata, label_key, non_malignant_cell_indices, malignant_cell_indices):
     ######################################################## choosing to eliminate the cell_types
     
     # Pretending some of the cell_types are maglingant
     #adata.layers["counts"] = adata.X.copy()
-    
+
+    # check whether the cell_type has float expression data, if so, delete it
     for ind,val in enumerate(non_malignant_cell_indices):
         checkdata = adata[adata.obs[label_key].isin(adata.obs[label_key].unique()[[val]])]
 
-        # check whether the cell_type has float expression data
-        if any([(k%1) for k in checkdata.layers['counts'].ravel()]):
-            non_malignant_cell_indices[ind] = -1
+        if scipy.sparse.issparse(checkdata.layers['counts']):
+            if np.any([(k%1) for k in checkdata.layers['counts'].todense().ravel()]):
+                non_malignant_cell_indices[ind] = -1
+        else:
+            if np.any([(k%1) for k in checkdata.layers['counts'].ravel()]):
+                non_malignant_cell_indices[ind] = -1
     
     non_malignant_cell_indices = [i for i in non_malignant_cell_indices if i != -1]
 
     for ind,val in enumerate(malignant_cell_indices):
         checkdata = adata[adata.obs[label_key].isin(adata.obs[label_key].unique()[[val]])]
 
-        # check whether the cell_type has float expression data
-        if any([(k%1) for k in checkdata.layers['counts'].ravel()]):
-            malignant_cell_indices[ind] = -1
+        if scipy.sparse.issparse(checkdata.layers['counts']):
+            if np.any([(k%1) for k in checkdata.layers['counts'].todense().ravel()]):
+                malignant_cell_indices[ind] = -1
+        else:
+            if np.any([(k%1) for k in checkdata.layers['counts'].ravel()]):
+                malignant_cell_indices[ind] = -1
     
     malignant_cell_indices = [i for i in malignant_cell_indices if i != -1]
 
-    ######################################################## choosing to round the cell_types
-    #np.round(adata[adata.obs['final_annotation'].isin(adata.obs['final_annotation'].unique()[[i for i in non_malignant_cell_indices]])].layers['counts'])
-    #np.round(adata[adata.obs['final_annotation'].isin(adata.obs['final_annotation'].unique()[[i for i in malignant_cell_indices]])].layers['counts'])
-    #adata[adata.obs['final_annotation'].isin(adata.obs['final_annotation'].unique()[[i for i in non_malignant_cell_indices]])].layers['counts'][adata[adata.obs['final_annotation'].isin(adata.obs['final_annotation'].unique()[[i for i in non_malignant_cell_indices]])].layers['counts']<0] = 0
-    #adata[adata.obs['final_annotation'].isin(adata.obs['final_annotation'].unique()[[i for i in malignant_cell_indices]])].layers['counts'][adata[adata.obs['final_annotation'].isin(adata.obs['final_annotation'].unique()[[i for i in malignant_cell_indices]])].layers['counts']<0] = 0
-    #################################################################################################################################
     ndata = adata[adata.obs[label_key].isin(adata.obs[label_key].unique()[[i for i in non_malignant_cell_indices]])]
     mdata = adata[adata.obs[label_key].isin(adata.obs[label_key].unique()[[i for i in malignant_cell_indices]])]
     return ndata, mdata
 
+def data_spliting_round(adata, label_key, non_malignant_cell_indices, malignant_cell_indices):
+    
+    # Pretending some of the cell_types are maglingant
+    #adata.layers["counts"] = adata.X.copy()
 
-def train_model_firstVAE(ndata, layer_key, batch_key):
+    ######################################################## choosing to round the cell_types
+    if scipy.sparse.issparse(adata.layers['counts']):
+        if np.any([(k%1) for k in adata.layers['counts'].todense().ravel()]):
+            adata.layers['counts'] = np.round(adata.layers['counts'].todense())
+    else:
+        if np.any([(k%1) for k in adata.layers['counts'].ravel()]):
+            adata.layers['counts'] = np.round(adata.layers['counts'])
+
+            #if np.any(adata.layers['counts']) < 0:
+                #idata.layers['counts'][adata.layers['counts']<0] = 0
+    
+    ndata = adata[adata.obs[label_key].isin(adata.obs[label_key].unique()[[i for i in non_malignant_cell_indices]])]
+    mdata = adata[adata.obs[label_key].isin(adata.obs[label_key].unique()[[i for i in malignant_cell_indices]])]
+    return ndata, mdata
+
+def train_model_firstVAE(ndata, layer_key, cell_type_key):
     ndata = ndata.copy()
-    SCVIadver_humanimm.setup_anndata(ndata, layer=layer_key, batch_key = batch_key) 
+    SCVIadver_humanimm.setup_anndata(ndata, layer=layer_key, batch_key = cell_type_key) 
     model_imm = SCVIadver_humanimm(ndata)
     model_imm.train(max_epochs=100)
     return model_imm
@@ -272,6 +292,7 @@ def get_latent_UMAP(model, ndata, batch_key, label_key, added_latent_key):
     sc.pp.neighbors(ndata, use_rep=added_latent_key, n_neighbors=20)
     sc.tl.umap(ndata, min_dist=0.3)
     sc.pl.umap(ndata, color = [label_key, batch_key])
+    return latent
 
 
 def fetch_batch_information(ndata, mdata, batch_key):
@@ -287,6 +308,7 @@ def second_VAE(mdata):
     sec_model_imm = scvi.model.SCVI(mdata, n_layers = 5, n_hidden = 512, n_latent = 10)
     sec_model_imm.train(max_epochs = 100, validation_size = 0.1, check_val_every_n_epoch = 5, early_stopping=True, 
     early_stopping_monitor='elbo_validation', early_stopping_patience = 5)
+    return sec_model_imm
 
 def plot_reconstruction_loss_and_elbo(model):
     train_recon_loss = model.history['reconstruction_loss_train']
@@ -298,12 +320,12 @@ def plot_reconstruction_loss_and_elbo(model):
     elbo_val.plot(ax = ax)
     val_recon_loss.plot(ax = ax)
 
-def get_latent_UMAP(model, batch_key, label_key):
+def get_latent_secUMAP(model, ndata, batch_key, label_key, added_latent_key):
     latent = model.get_latent_representation()
-    mdata.obsm["X_secVAE_1"] = latent
-    sc.pp.neighbors(mdata, use_rep="X_secVAE_1", n_neighbors=20)
-    sc.tl.umap(mdata, min_dist=0.3)
-    sc.pl.umap(mdata, color = [label_key, batch_key])
+    ndata.obsm[added_latent_key] = latent
+    sc.pp.neighbors(ndata, use_rep=added_latent_key, n_neighbors=20)
+    sc.tl.umap(ndata, min_dist=0.3)
+    sc.pl.umap(ndata, color = [label_key, batch_key])
 
 def kbet_for_different_cell_type(adata, latent_key, batch_key, label_key):
     k = len(adata.obs[label_key].unique())
@@ -320,10 +342,12 @@ def kbet_rni_asw(adata, latent_key, batch_key, label_key, group_key, max_cluster
     ari_score_collection = []
     k = np.linspace(2, max_clusters, max_clusters-1)
     for i in k:
-        bdata = _binary_search_leiden_resolution(bdata, k = int(i), start = 0.1, end = 0.9, key_added ='final_annotation', random_state = 0, directed = False, 
+        cdata = _binary_search_leiden_resolution(bdata, k = int(i), start = 0.1, end = 0.9, key_added ='final_annotation', random_state = 0, directed = False, 
         use_weights = False, _epsilon = 1e-3)
-
-        adata.obs['cluster_{}'.format(int(i))] = bdata.obs['final_annotation']
+        if cdata is None:
+            ari_score_collection.append(0)
+            continue
+        adata.obs['cluster_{}'.format(int(i))] = cdata.obs['final_annotation']
         ari_score_collection.append(compute_ari(adata, group_key = group_key, cluster_key = 'cluster_{}'.format(int(i))))
 
 

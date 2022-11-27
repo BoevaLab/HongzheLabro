@@ -3,6 +3,7 @@ import scvi
 import anndata as ad
 import scanpy as sc
 import pandas as pd
+import scipy
 
 def malignant_cell_collection(adata, malignant_cell_incices, label_key):
     mdata = adata[adata.obs[label_key].isin(adata.obs[label_key].unique()[[i for i in malignant_cell_incices]])]
@@ -22,6 +23,7 @@ def model_preprocessing(adata):
 )
 
 def model_train(adata, layer_key, batch_key, n_layers, n_hidden, n_latent):
+    adata = adata.copy()
     scvi.model.SCVI.setup_anndata(adata, layer=layer_key, batch_key = batch_key)
     model = scvi.model.SCVI(adata, n_layers = n_layers, n_hidden=n_hidden, n_latent=n_latent)
     model.train(max_epochs=100, validation_size=0.1, check_val_every_n_epoch=5, early_stopping=True, 
@@ -58,11 +60,13 @@ def kbet_rni_asw(adata, latent_key, batch_key, label_key, group_key, max_cluster
     bdata = adata.copy()
     ari_score_collection = []
     k = np.linspace(2, max_clusters, max_clusters-1)
-
     for i in k:
-        bdata = _binary_search_leiden_resolution(bdata, k = int(i), start = 0.1, end = 0.9, key_added ='final_annotation', random_state = 0, directed = False, 
+        cdata = _binary_search_leiden_resolution(bdata, k = int(i), start = 0.1, end = 0.9, key_added ='final_annotation', random_state = 0, directed = False, 
         use_weights = False, _epsilon = 1e-3)
-        adata.obs['cluster_{}'.format(int(i))] = bdata.obs['final_annotation']
+        if cdata is None:
+            ari_score_collection.append(0)
+            continue
+        adata.obs['cluster_{}'.format(int(i))] = cdata.obs['final_annotation']
         ari_score_collection.append(compute_ari(adata, group_key = group_key, cluster_key = 'cluster_{}'.format(int(i))))
 
 
