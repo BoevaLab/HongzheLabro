@@ -228,7 +228,8 @@ def data_spliting_del(adata, label_key, non_malignant_cell_indices, malignant_ce
     ######################################################## choosing to eliminate the cell_types
     
     # Pretending some of the cell_types are maglingant
-    #adata.layers["counts"] = adata.X.copy()
+    if "counts" not in adata.layers.keys():
+        adata.layers["counts"] = adata.X.copy()
 
     # check whether the cell_type has float expression data, if so, delete it
     for ind,val in enumerate(non_malignant_cell_indices):
@@ -303,9 +304,9 @@ def fetch_batch_information(ndata, mdata, batch_key):
     mdata.obs[latent_id_imm] = batch_df_mean_loc_imm.values
     return mdata, latent_id_imm
 
-def second_VAE(mdata):
-    scvi.model.SCVI.setup_anndata(mdata, layer='counts', continuous_covariate_keys=latent_id_imm)
-    sec_model_imm = scvi.model.SCVI(mdata, n_layers = 5, n_hidden = 512, n_latent = 10)
+def second_VAE(mdata, latent_info, n_layers, n_hidden, n_latent):
+    scvi.model.SCVI.setup_anndata(mdata, layer='counts', continuous_covariate_keys=latent_info)
+    sec_model_imm = scvi.model.SCVI(mdata, n_layers = n_layers, n_hidden = n_hidden, n_latent = n_latent)
     sec_model_imm.train(max_epochs = 100, validation_size = 0.1, check_val_every_n_epoch = 5, early_stopping=True, 
     early_stopping_monitor='elbo_validation', early_stopping_patience = 5)
     return sec_model_imm
@@ -327,14 +328,100 @@ def get_latent_secUMAP(model, ndata, batch_key, label_key, added_latent_key):
     sc.tl.umap(ndata, min_dist=0.3)
     sc.pl.umap(ndata, color = [label_key, batch_key])
 
+
 def kbet_for_different_cell_type(adata, latent_key, batch_key, label_key):
     k = len(adata.obs[label_key].unique())
-    kbet_collection = []
+    kBET_scores = {"cell_type": [], "kBET": []}
     for i in range(k):
-        kbet_collection.append(adata.obs[label_key].unique()[i])
+        kBET_scores["cell_type"].append(adata.obs[label_key].unique()[i])
         kbet_score = kbet(adata[adata.obs[label_key].isin(adata.obs[label_key].unique()[[i]])], latent_key = latent_key, batch_key = batch_key, label_key = label_key)
-        kbet_collection.append(kbet_score)
-    return kbet_collection
+        kBET_scores["kBET"].append(kbet_score)
+    return kBET_scores
+
+
+from sklearn.metrics.cluster import silhouette_samples, silhouette_score
+
+def silhouette_batch(
+    adata,
+    batch_key,
+    group_key,
+    latent_key,
+    metric="euclidean",
+    return_all=False,
+    scale=True,
+    verbose=True,
+):
+    """Batch ASW
+    Modified average silhouette width (ASW) of batch
+    This metric measures the silhouette of a given batch.
+    It assumes that a silhouette width close to 0 represents perfect overlap of the batches, thus the absolute value of
+    the silhouette width is used to measure how well batches are mixed.
+    For all cells :math:`i` of a cell type :math:`C_j`, the batch ASW of that cell type is:
+    .. math::
+        batch \\, ASW_j = \\frac{1}{|C_j|} \\sum_{i \\in C_j} |silhouette(i)|
+    The final score is the average of the absolute silhouette widths computed per cell type :math:`M`.
+    .. math::
+        batch \\, ASW = \\frac{1}{|M|} \\sum_{i \\in M} batch \\, ASW_j
+    For a scaled metric (which is the default), the absolute ASW per group is subtracted from 1 before averaging, so that
+    0 indicates suboptimal label representation and 1 indicates optimal label representation.
+    .. math::
+        batch \\, ASW_j = \\frac{1}{|C_j|} \\sum_{i \\in C_j} 1 - |silhouette(i)|
+    :param batch_key: batch labels to be compared against
+    :param group_key: group labels to be subset by e.g. cell type
+    :param embed: name of column in adata.obsm
+    :param metric: see sklearn silhouette score
+    :param scale: if True, scale between 0 and 1
+    :param return_all: if True, return all silhouette scores and label means
+        default False: return average width silhouette (ASW)
+    :param verbose: print silhouette score per group
+    :return:
+        Batch ASW  (always)
+        Mean silhouette per group in pd.DataFrame (additionally, if return_all=True)
+        Absolute silhouette scores per group label (additionally, if return_all=True)
+    """
+    if latent_key not in adata.obsm.keys():
+        print(adata.obsm.keys())
+        raise KeyError(f"{latent_key} not in obsm")
+
+    sil_per_label = []
+    for group in adata.obs[group_key].unique():
+        adata_group = adata[adata.obs[group_key] == group]
+        n_batches = adata_group.obs[batch_key].nunique()
+
+        if (n_batches == 1) or (n_batches == adata_group.shape[0]):
+            continue
+
+        sil = silhouette_samples(
+            adata_group.obsm[latent_key], adata_group.obs[batch_key], metric=metric
+        )
+
+        # take only absolute value
+        sil = [abs(i) for i in sil]
+
+        if scale:
+            # scale s.t. highest number is optimal
+            sil = [1 - i for i in sil]
+
+        sil_per_label.extend([(group, score) for score in sil])
+
+    sil_df = pd.DataFrame.from_records(
+        sil_per_label, columns=["group", "silhouette_score"]
+    )
+
+    if len(sil_per_label) == 0:
+        sil_means = np.nan
+        asw = np.nan
+    else:
+        sil_means = sil_df.groupby("group").mean()
+        asw = sil_means["silhouette_score"].mean()
+
+    if verbose:
+        print(f"mean silhouette per group: {sil_means}")
+
+    if return_all:
+        return asw, sil_means, sil_df
+
+    return {"asw_batch_score":asw}
 
 
 def kbet_rni_asw(adata, latent_key, batch_key, label_key, group_key, max_clusters):
@@ -356,4 +443,116 @@ def kbet_rni_asw(adata, latent_key, batch_key, label_key, group_key, max_cluster
     sc.pl.umap(adata, color = ['cluster_{}'.format(int(k[np.argmax(ari_score_collection)]))])
     kbet_score = kbet(adata, latent_key=latent_key, batch_key=batch_key, label_key=label_key)
     asw_score = compute_asw(adata, group_key = group_key, latent_key = latent_key)
-    return (kbet_score, ari_score, asw_score)
+    asw_batch_score = silhouette_batch(adata, batch_key = batch_key, group_key= group_key, latent_key= latent_key)
+
+    return [kbet_score, ari_score, asw_score, asw_batch_score]
+
+def hyperparameter_tuning(adata, latent_info, batch_key, label_key, group_key, max_clusters, grid_search_list):
+    # After data_spliting_del, train_model_firstVAE and fetch_batch_information
+    ari_collection = []
+    asw_batch_collection = []
+    kbet_collection = [] 
+    asw_collection = []
+
+    for i in grid_search_list:
+        model = second_VAE(adata, latent_info = latent_info, n_layers = i, n_hidden = 512, n_latent = 10)
+        latent_key = get_latent_secUMAP(model, adata, batch_key, label_key, added_latent_key = 'X_secVAE_{}'.format(int(i)), print_UMAP = True)
+        score_collection = kbet_rni_asw(adata, latent_key = latent_key, batch_key = batch_key, label_key = label_key, group_key = group_key, max_clusters = max_clusters)
+        ari_collection.append(list(score_collection[1].values())[0])
+        asw_batch_collection.append(list(score_collection[3].values())[0])
+        kbet_collection.append(list(score_collection[0].values())[0])
+        asw_collection.append(list(score_collection[2].values())[0])
+
+    ari_collection_mn = max_min_scale(ari_collection)
+    asw_batch_collection_mn = max_min_scale(asw_batch_collection)
+    kbet_collection_mn = max_min_scale(kbet_collection)
+    asw_collection_mn = max_min_scale(asw_collection)
+
+
+    #batch removal score includes kbet and asw_batch, bio-conservation score (cell_type_keeping) includes ari and asw_cell
+    bio_score_collection = [] 
+    batch_score_collection = [] 
+    overall_score_collection = []
+    for i in range(len(grid_search_list)):
+        bio_score = np.mean((ari_collection_mn[i], asw_collection_mn[i]))
+        bio_score_collection.append(bio_score)
+        batch_score = np.mean((kbet_collection_mn[i], asw_batch_collection_mn[i]))
+        batch_score_collection.append(batch_score)
+        overall_score_collection.append(0.6 * bio_score + 0.4 * batch_score)
+    return [ari_collection, asw_collection, kbet_collection, asw_batch_collection,bio_score_collection, batch_score_collection, overall_score_collection]
+
+
+def convert_scorelist_into_df(scorelist, variable_name, store, csv_file_name):
+    score_pd = pd.DataFrame(scorelist, index = ["ari", "asw_cell", "kbet", "asw_batch","bio_score", "batch_score", "overall_score"], columns = variable_name)
+    if store:
+        pd.to_csv(csv_file_name)
+    return score_pd    
+
+def compare_method(score_adver, row_index, col_index, general_csv_name, col_index_csv):
+    score_general_scvi = pd.read_csv(general_csv_name)
+    best_adver = score_adver.iloc[row_index, col_index].values.tolist()
+    best_general_scvi = score_general_scvi.iloc[row_index, col_index_csv].values.tolist()
+
+
+    ari_collection_mn = max_min_scale([best_adver[0], best_general_scvi[0]])
+    asw_cell_collection_mn = max_min_scale([best_adver[1], best_general_scvi[1]])
+    kbet_collection_mn = max_min_scale([best_adver[2], best_general_scvi[2]])
+    asw_batch_collection_mn = max_min_scale([best_adver[3], best_general_scvi[3]])
+
+    bio_score_collection = [] 
+    batch_score_collection = [] 
+    overall_score_collection = []
+    for i in range(2):
+        bio_score = np.mean((ari_collection_mn[i], asw_cell_collection_mn[i]))
+        bio_score_collection.append(bio_score)
+        batch_score = np.mean((kbet_collection_mn[i], asw_batch_collection_mn[i]))
+        batch_score_collection.append(batch_score)
+        overall_score_collection.append(0.6 * bio_score + 0.4 * batch_score)
+    return [[best_adver[0], best_general_scvi[0]], 
+    [best_adver[1], best_general_scvi[1]],
+    [best_adver[2], best_general_scvi[2]],
+    [best_adver[3], best_general_scvi[3]],
+    bio_score_collection, batch_score_collection, overall_score_collection]
+
+#removing the majority batch in the minority maglingant cells and see how it may perform on the batch effect
+def remove_minor_batch_for_malignant_cells(mdata, label_key, batch_key,num_minor_cell):
+    # Extracts the index of the minor cell_type
+    minor_cell_number_collection = []
+    for ind, _ in enumerate(range(len(mdata.obs[label_key].unique()))):
+        minor_cell_number_collection.append(len(mdata[mdata.obs[label_key].isin(mdata.obs[label_key].unique()[[ind]])]))
+
+    minor_cell_indices_sort = list(np.argsort(minor_cell_number_collection))
+    minor_cell_index = sorted(np.argsort(minor_cell_indices_sort)[:num_minor_cell])
+    major_cell_index = sorted(np.argsort(minor_cell_indices_sort)[len(minor_cell_indices_sort)-num_minor_cell:])
+
+
+    # Extracts the index of the majority batch in the minor cell_type
+    removedata = mdata.copy()
+    minor_cells = removedata[removedata.obs[label_key].isin(removedata.obs[label_key].unique()[[i for i in minor_cell_index]])]
+    major_cells = removedata[removedata.obs[label_key].isin(removedata.obs[label_key].unique()[[i for i in major_cell_index ]])]
+    minor_cell_number_collection = []
+    minor_cell_index_collection = []
+    for ind, _ in enumerate(range(len(minor_cells.obs[batch_key].unique()))):
+        minor_cell_number_collection.append(len(minor_cells[minor_cells.obs[batch_key]==minor_cells.obs[batch_key].unique()[ind]]))
+        minor_cell_index_collection.append(ind)
+    minor_cell_index_collection.remove(np.argmax(minor_cell_number_collection))
+    minor_cells = minor_cells[minor_cells.obs[batch_key].isin(minor_cells.obs[batch_key].unique()[[i for i in minor_cell_index_collection]])]
+    removedata = ad.concat((minor_cells, major_cells))
+    return removedata
+
+#try to remove the minor cells in non-maglingant cells to see how it may affect the performance
+def remove_minor_cell_type_for_nonmalignant_cells(ndata, label_key, num_cell_excluded):
+     # Extracts the index of the minor cell_type
+    minor_cell_number_collection = []
+
+    for ind, _ in enumerate(range(len(ndata.obs[label_key].unique()))):
+        minor_cell_number_collection.append(len(ndata[ndata.obs[label_key].isin(ndata.obs[label_key].unique()[[ind]])]))
+
+    
+    minor_cell_indices_sort = list(np.argsort(minor_cell_number_collection))
+    minor_cell_indices_sort = minor_cell_indices_sort[num_cell_excluded:]
+
+    removedata = ndata.copy()
+    major_cells = removedata[removedata.obs[label_key].isin(removedata.obs[label_key].unique()[[i for i in minor_cell_indices_sort]])]
+    return major_cells
+
