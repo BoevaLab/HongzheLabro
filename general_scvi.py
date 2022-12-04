@@ -174,6 +174,12 @@ def kbet_rni_asw(adata, latent_key, batch_key, label_key, group_key, max_cluster
 
     return [kbet_score, ari_score, asw_score, asw_batch_score]
 
+def max_min_scale(dataset):
+    if np.max(dataset) - np.min(dataset) != 0:
+        return (dataset - np.min(dataset)) / (np.max(dataset) - np.min(dataset))
+    if np.max(dataset) - np.min(dataset) == 0:
+        return dataset
+
 def hyperparameter_tuning(adata, layer_key, batch_key, label_key, group_key, max_clusters, grid_search_list):
     # After malignant_cell_collection and model_preprocessing
     ari_collection = []
@@ -208,8 +214,11 @@ def hyperparameter_tuning(adata, layer_key, batch_key, label_key, group_key, max
         overall_score_collection.append(0.6 * bio_score + 0.4 * batch_score)
     return [ari_collection, asw_collection, kbet_collection, asw_batch_collection,bio_score_collection, batch_score_collection, overall_score_collection]
 
-def convert_scorelist_into_df(scorelist, variable_name):
-    return pd.DataFrame(scorelist, index = ["ari", "asw_cell", "kbet", "asw_batch","bio_score", "batch_score", "overall_score"], columns = variable_name)
+def convert_scorelist_into_df(scorelist, variable_name, store, csv_file_name):
+    score_pd = pd.DataFrame(scorelist, index = ["ari", "asw_cell", "kbet", "asw_batch","bio_score", "batch_score", "overall_score"], columns = variable_name)
+    if store:
+        pd.to_csv(csv_file_name)
+    return score_pd
 
 def remove_minor_batch_for_malignant_cells(mdata, label_key, batch_key, num_minor_cell):
     # Extracts the index of the minor cell_type

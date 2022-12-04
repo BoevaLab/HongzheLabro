@@ -488,6 +488,12 @@ def convert_scorelist_into_df(scorelist, variable_name, store, csv_file_name):
         pd.to_csv(csv_file_name)
     return score_pd    
 
+def max_min_scale(dataset):
+    if np.max(dataset) - np.min(dataset) != 0:
+        return (dataset - np.min(dataset)) / (np.max(dataset) - np.min(dataset))
+    if np.max(dataset) - np.min(dataset) == 0:
+        return dataset
+
 def compare_method(score_adver, row_index, col_index, general_csv_name, col_index_csv):
     score_general_scvi = pd.read_csv(general_csv_name)
     best_adver = score_adver.iloc[row_index, col_index].values.tolist()
