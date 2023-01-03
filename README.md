@@ -10,3 +10,5 @@ no_adver_final.ipynb contains the grid search part for batch representation meth
 general_scvi.ipynb contains the grid search part for the traditional Scvi-tools and corresponding UMAPs. 
 adver_final.ipynb contains the grid search part for batch representation method with adversarial training plan, the results for heterogeneity research and corresponding UMAPs.
 Benchmark.ipynb contains the overall summary and plots of the results.
+
+csv folder contains all results from grid search and heterogeneity research.
